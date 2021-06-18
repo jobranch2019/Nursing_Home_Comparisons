@@ -1,0 +1,218 @@
+---
+title: "Nursing Home Compare Project in R"
+author: "Jolene Branch"
+date: "11/13/2019"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+Set working directory
+setwd("C:/Bellevue University/DSC 520 Statistics for Data Science/Final Project")
+
+Import the data.  I cleaned it up a bit first.  Column values changed to column names.
+```{r import}
+first_import <- "C:/Bellevue University/DSC 520 Statistics for Data Science/Final Project/Provider info from Nursing Home Compare, via Kaggle.csv"
+
+data_set <- read.csv(first_import, check.names = FALSE)
+```
+
+```{r install_pkgs}
+install.packages("ggplot2")
+library(ggplot2)
+install.packages("pastecs")
+library(pastecs)
+install.packages("Rtools")
+library(Rtools)
+install.packages("dplyr")
+library(dplyr)
+```
+
+I made sure I was dealing with a data frame.
+```{r class}
+class(data_set)
+```
+I checked to see how many rows and columns I have before trying something silly like to printing the whole dataset to the console.
+```{r dim}
+dim(data_set)
+# [1] 15644    80
+```
+I looked at the column names().  I like this view and will use it later when deciding which columns to remove because it has the index number for each column.
+```{r names}
+names(data_set)
+```
+I ran str() to see how many columns I have, the class of each variable, and a preview of its contents.  Too bad it doesn't have the column number.
+```{r structure}
+str(data_set)
+# 'data.frame':	15644 obs. of  80 variables:
+```
+
+```{r headtail}
+head(data_set)
+tail(data_set)
+# The words in all the column names were initially separated by periods.  Using check.names within the read.csv() when importing the data got rid of the periods, but I wasn't sure if spaces within column names were OK at this point in the data frame.  Stack Overflow says I need to refer to column names that have spaces by wrapping them with backticks.  i.e. data_set$`column name`
+```
+
+```{r glimpse}
+# glimpse() is a stronger version of str(), and requires dplyr installattion.
+glimpse(data_set)
+
+# Observations: 15,644
+# Variables: 80
+# $ `Federal Provider Number`                                         <fct> 15009, 15010, 15012, 150...
+# $ `Provider Name`                                                   <fct> "BURNS NURSING HOME, INC...
+# $ `Provider Address`                                                <fct> "701 MONROE STREET NW", ...
+# $ `Provider City`                                                   <fct> RUSSELLVILLE, SYLACAUGA,...
+# Oh, this is MUCH easier to look at and understand!  It shows that backticks are already wrapped around my column names, except for the five that I couldn't change from column names to variable names.  There are too many rows to visually check for N/As, so to see if there are any N/As anywhere in the data set I used is.na().
+any(is.na(data_set))
+# [1] TRUE
+sum(is.na(data_set)) 
+# [1] 5652
+# There are 5652 TRUEs in the data frame.  Most, if not all the staffing variables have N/As, but they all seem to have the same sum of N/As, (probably because the same 394 facilities did not enter staffing numbers for any of their levels of nursing staff), so maybe no need to start thinking about omitting any data unless I simply omit the observations of the nursing homes with any N/As.
+```
+
+```{R summary}
+# summary() shows a summary of the distribution of each column
+summary(data_set)
+# 
+# Federal Provider Number                    Provider Name                 Provider Address
+#  01A193 :    1           MILLER'S MERRY MANOR      :   30   N2665 CTY RD QQ       :    4  
+#  01A208 :    1           MANORCARE HEALTH SERVICES :   17   1 HEALTHY WAY         :    2  
+#  04A158 :    1           LITTLE SISTERS OF THE POOR:    9   100 AUDSLEY DRIVE     :    2  
+
+# Oof.  The variables that I was going to consider to be response variables all seem to have super low medians and means.  Like 0.9s and 1.0s.  (These are things like count of fines, count of facility reported incidents, and count of substantiated complaints).  I learned that Rating Cycle 1 is the most recent.  That is the one I will use.
+```
+
+```{r WI_count}
+# How many observations are facilities in WI?
+nrow(subset(data_set, `Provider State` == "WI"))
+# [1] 385.  That is quite a few.  I'm going to just use WI nursing homes for my analysis.
+data_wi <- subset(data_set, `Provider State` == "WI")
+head(data_wi)
+```
+names(data_wi) gets me the column numbers so I don't have to spell out the columns I want to remove from the data frame.
+```{r remove_old_ratings}
+data_wi <- subset(data_wi, select = -c(3,5,8,16:18,20:22,24,26,28,30,32,34,35:44,57:72,80))
+# This removes columns that included information from two earlier inspections, leaving me only the most recent one.  While I'm at it, I should remove the five columns with no data definitions in the metadata file, as I won't be able to use them anyway.   Reported staffing numbers are not needed if the calculations use the adjusted staffing numbers.  Footnote columns are not needed because I cannot find the key for the footnotes on the source website.  State is not needed because I already filtered the whole thing by the state of WI...  That brings me to 38 columns.
+# Missed one of the footnote columns:
+data_wi <- subset(data_wi, select = -c(19))
+# Now at 37 columns.
+```
+Look for missing values.
+```{r values_missing}
+any(is.na(data_wi))
+# [1] TRUE
+sum(is.na(data_wi))
+#[1] 55
+summary(data_wi)
+```
+
+I am going to use QM Rating as the response variable.  I am not using Overall Rating, because Staffing Rating is factored into that.  I may use Adjusted Total Nursing Staffing Hours per Resident per day as its own response variable at some point.  I believe there are 7 facilities that did not enter staffing data.  I want to remove them from the data set.  In my opinion, having worked in healthcare for 20+ years, staffing is a universally understood and expected reporting metric, and lack of transparency and/or lack of ability to report staffing numbers (for whatever reason) invalidates other data from those sites.
+
+How do I find out which rows have the NAs in the staffing columns and delete the whole rows?  And the four that have no overall rating?  I can tell from the consistent count of 7 NAs for each of the staffing columns, that 6 sites account for at least 42 of the 55 NAs.  Once I delete those 6 sites, I can see how many of the remaining 13 NAs also are gone.  (This is likely due to the calculated value of a couple of the columns).
+
+```{r remove_staffing_nonreporters}
+# I only need to use one column to check for NAs and remove the rows:
+resultDF <- data_wi[complete.cases(data_wi$`Adjusted Nurse Aide Staffing Hours per Resident per Day`), ]
+# Check to see how many of the 385 observations remain.  (Should be 385 - 7).
+str(resultDF)
+
+# 'data.frame':	378 obs. of  37 variables:
+#  $ Federal Provider Number                                 : Factor w/ 15644 levels "01A193","01A208",..: 12634 12635 12636 12637 12638 12639 12640 12641 12642 12643 ...
+#  $ Provider Name                                           : Factor w/ 15335 levels "15 CRAIGSIDE",..: 8092 3368 14224 7704 8251 6775 1156 3625 3683 14500 ...
+```
+
+```{r NA_check}
+# How many NAs are left?  Remember I knew that removing the six observations that hadn't included their staffing data would result in some of the remaining 13 derived columns' NAs to be removed as well.
+any(is.na(resultDF))
+# [1] TRUE
+sum(is.na(resultDF))
+# [1] 1
+```
+
+```{r last_NA}
+# Where is that last NA?! str(resultDF) showed me that it is in the QM Rating column.  That is my response variable, so if any observation has an NA in that column, I don't want it in my dataset anyway.  This removes that observation:
+resultDF <- resultDF[complete.cases(resultDF$`QM Rating`), ]
+any(is.na(resultDF))
+# [1] FALSE
+```
+
+Look for outliers.  I don't see anything obvious by looking at the 'Max.' numbers:
+summary(resultDF)
+
+```{r histograms}
+# View some histograms of variables:
+nurse_staff_hist <- hist(resultDF$`Adjusted Total Nurse Staffing Hours per Resident per Day`) + ggtitle("Frequency of Nurse Staffing HPPD")
+nurse_staff_hist
+# I am not worried about the facility with 8+ hours, as this is an adjusted measure, and none of the individual categories of nursing staff had any obvious outliers.
+# Have to convert this column to numeric from factor first:
+resultDF$'Rating cycle 1 Total Number of Health Deficiencies' <- as.numeric(resultDF$'Rating cycle 1 Total Number of Health Deficiencies')
+deficiencies_hist <- hist(resultDF$'Rating cycle 1 Total Number of Health Deficiencies')
+deficiencies_hist
+# The total number of health deficiencies plot is interesting in that it is bimodal. At some point it would be good to figure out if I can subset this data set one more time.
+incidents_hist <- hist(resultDF$'Number of Facility Reported Incidents')
+incidents_hist
+substantiated_hist <- hist(resultDF$'Number of Substantiated Complaints')
+substantiated_hist
+```
+
+```{r remove_more}
+# There are more columns I am not going to use.
+resultDF1 <- subset(resultDF, select = -c(1,4,5,11:13,35:36))
+str(resultDF1)
+DF <- subset(resultDF1, select = -c(9,11:12,18:25))
+str(DF)
+```
+Looking for correlations:
+```{r correlation_searches}
+incident_rating <- ggplot(data = DF, aes(x = `Number of Facility Reported Incidents`, y = `QM Rating`)) + geom_point() + geom_jitter() + ggtitle("Facility Incidents and QM Rating")
+incident_rating
+# I would have expected to see the 'blob' of dots at facilities with zero reported incidents that received a QM Rating of 5 (which is the best).  What is not as apparent, though, is if facilities with a lot of incidents get lower QM Ratings.  This negative correlation can be visualized by adding a regression line.
+incident_rating_regr <- ggplot(data = DF, aes(x = `Number of Facility Reported Incidents`, y = `QM Rating`)) + geom_point() + geom_jitter() + geom_smooth(method = "lm", se = FALSE) + ggtitle("Facility Incidents and QM Rating")
+incident_rating_regr
+
+staffing_incidents <- ggplot(data = DF, aes(x= `Adjusted Total Nurse Staffing Hours per Resident per Day`, y = `Number of Facility Reported Incidents`)) + geom_point() + geom_jitter() + ggtitle("Nursing HPPD and Number of Facility Incidents")
+staffing_incidents
+
+# OK so that one is interesting.  Most facilities have 0, 1, or 2 reported incidents.  Although I created a scatterplot, it looks like a histogram that trails to the right.  This is starting to look like more nurse staffing hours per Resident per Day might be negatively correlated with number of facility reported incidents.  The scatterplot kind of hints at a negative correlation.  The number of facilities with zero reported incidents is either skew or noise. The regression line does not add much understanding, expect that it is a negative correlation, which would be expected.
+staffing_incidents_regr <- ggplot(data = DF, aes(x= `Adjusted Total Nurse Staffing Hours per Resident per Day`, y = `Number of Facility Reported Incidents`)) + geom_point() + geom_jitter() + ggtitle("Nursing HPPD and Number of Facility Incidents") + geom_smooth(method = "lm", se = FALSE)
+staffing_incidents_regr
+
+ownership_incidents <- ggplot(data = DF, aes(x = `Adjusted Total Nurse Staffing Hours per Resident per Day`, y = `Number of Facility Reported Incidents`)) + geom_point(aes(color = `Ownership Type`)) + geom_jitter() + ggtitle("Incidents By Staffing Numbers")
+ownership_incidents
+# That did not help a lot.
+```
+
+```{r load_more}
+# These are tools I might need for correlation or regression models.
+library(boot)
+library(car)
+library(QuantPsyc)
+```
+
+```{r lm}
+lin_mod_1 <- lm(`QM Rating` ~ `Adjusted Total Nurse Staffing Hours per Resident per Day`, data = DF)
+summary(lin_mod_1)
+# To get the Pearson correlation coefficient, take the square root of R2, which came from summary(lin_mod_1).
+# sqrt(0.004183) = 0.06467612
+```
+This model tells me there is basically no correlation between the number of nursing hours spent on patient care per day and the quality rating of nursing homes.  Next I'll look for correlation between nursing hours of care and number of reported and substantiated incidents (which could also be considered dependent variables).
+
+```{r lm_incidents}
+lin_mod_2 <- lm(`Number of Facility Reported Incidents` ~ `Adjusted Total Nurse Staffing Hours per Resident per Day`, data = DF)
+summary(lin_mod_2)
+# R2 is 0.02, which means that nursing hours of care per day can account for 2% of variation in number of facility reported incidents.  Even though the p value is quite low (at 0.00568), this predictor model isn't much better than simply using the mean value of `Number of Facility Reported Incidents`.
+```
+Another problem with using number of facility reported incidents as an outcome measure, is that encouragement to report is a by-product of a culture of safety, and many medical facilities struggle with this concept.  So I'd better keep looking to see if stronger correlations exist.
+
+```{r lm_incidents_3}
+lin_mod_3 <- lm(`Number of Substantiated Complaints` ~ `Adjusted Total Nurse Staffing Hours per Resident per Day`, data = DF)
+summary(lin_mod_3)
+# R2 is 0.03841, which means that nursing hours of care per day can account for about 4% of variation in number of substantiated complaints.
+```
+Now we're making a little progress.  The problem now is, 4% of variation is only 4 out of 100.  It would be very unusual for a nursing home to have 100 substantiated complaints within a year, and as the n decreases, the validity of that statment of explanation of variation decreases.  So even though the p-value is very low (at 0.0001282), this predictor model isn't much better than simply using the mean value of `Number of Facility Substantiated Complaints`.
+
+So the use of regression analysis to predict quality of care (via quality ratings, number of reported incidents, and number of substantiated incidents) has proven fruitless.  Perhaps the next step would be to go back to some of the other explanatory variables and look for differences in effect on some of the other explanatory variables, such as the effect of ownership type on staffing hours and/or incidents (or complaints).
+
+[I could start splitting hairs and subset the data by level of nursing staff (such as RN, LPN, and Nurse Aide), but I do not believe the nursing home resident and his/her family care so much WHO is providing the cares but more that the cares are being done].
+
